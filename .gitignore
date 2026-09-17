@@ -1,0 +1,9 @@
+# data: keep the directory, ignore everything inside
+__DATA__/*
+!__DATA__/.gitkeep
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
