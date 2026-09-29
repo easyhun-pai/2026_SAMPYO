@@ -76,6 +76,13 @@ class Store:
                 for attr in ATTRS:
                     if r.get(attr):
                         self.pred[(r["file"], attr)] = (r[attr], float(r[attr + "_p"]))
+        self.sets, self.notes = {}, {}       # set name -> [file], (file, set) -> note
+        sp = os.path.join(feat_dir, "review_sets.csv")
+        if os.path.exists(sp):
+            for r in csv.DictReader(open(sp, encoding="utf-8-sig")):
+                if r["file"] in self.by_file:
+                    self.sets.setdefault(r["set"], []).append(r["file"])
+                    self.notes[(r["file"], r["set"])] = r["note"]
         self.caps, self.cap_lock = {}, threading.Lock()
 
     def gsize(self, f):
@@ -95,8 +102,13 @@ class Store:
         p = self.pred.get((f, attr))
         return abs(p[1] - 0.5) if p else -1.0
 
-    def page(self, attr, clip, sort, n):
-        pend = [r for r in self.items if (r["file"], attr) not in self.done and clip in ("", r["clip"])]
+    def page(self, attr, clip, sort, n, set_name="", review=False):
+        if set_name:
+            files = set(self.sets.get(set_name, []))
+            pool = [self.by_file[f] for f in self.sets.get(set_name, [])]
+        else:
+            pool = self.items
+        pend = [r for r in pool if (review or (r["file"], attr) not in self.done) and clip in ("", r["clip"])]
         key = {"uncertain": lambda r: (self._unc(r["file"], attr), -self.gsize(r["file"])),
                "group": lambda r: (-self.gsize(r["file"]), r["clip"], r["frame"]),
                "time": lambda r: (r["clip"], r["frame"], r["x1"]),
@@ -107,24 +119,30 @@ class Store:
         for r in pend[:n]:
             p = self.pred.get((r["file"], attr))
             out.append(dict(file=r["file"], clip=r["clip"], t=r["time_s"], w=r["w"], h=r["h"], conf=r["conf"],
-                            n=self.gsize(r["file"]), pred=p[0] if p else None, p=round(p[1], 3) if p else None))
+                            n=self.gsize(r["file"]), pred=p[0] if p else None, p=round(p[1], 3) if p else None,
+                            cur=self.done.get((r["file"], attr)), note=self.notes.get((r["file"], set_name), "")))
         return out
 
-    def commit(self, attr, decisions):
+    def commit(self, attr, decisions, review=False):
         with self.lock:
             batch, now = str(int(time.time() * 1000)), time.strftime("%Y-%m-%d %H:%M:%S")
             rows = []
             for d in decisions:
                 f, v = d["file"], d["v"]
-                if f in self.by_file and (f, attr) not in self.done and v in ("O", "X", "U"):
-                    g = self.group_of.get(f, "")
-                    self.done[(f, attr)] = v
-                    rows.append(dict(file=f, attr=attr, value=v, group=g, source="rep", batch=batch, time=now))
-                    for m in self.members.get(g, []):        # propagate to the rest of the group
-                        if m != f and (m, attr) not in self.done:
-                            self.done[(m, attr)] = v
-                            rows.append(dict(file=m, attr=attr, value=v, group=g, source="prop",
-                                             batch=batch, time=now))
+                if f not in self.by_file or v not in ("O", "X", "U"):
+                    continue
+                if (f, attr) in self.done and not review:
+                    continue                                 # already decided, normal pass skips it
+                if review and self.done.get((f, attr)) == v:
+                    continue                                 # re-review confirmed the same value: nothing to write
+                g = self.group_of.get(f, "")
+                self.done[(f, attr)] = v
+                rows.append(dict(file=f, attr=attr, value=v, group=g, source="rep", batch=batch, time=now))
+                for m in self.members.get(g, []):             # propagate to the rest of the group
+                    if m != f and (review or (m, attr) not in self.done):
+                        self.done[(m, attr)] = v
+                        rows.append(dict(file=m, attr=attr, value=v, group=g, source="prop",
+                                         batch=batch, time=now))
             new = not os.path.exists(self.log_path)
             with open(self.log_path, "a", newline="", encoding="utf-8") as fh:
                 w = csv.DictWriter(fh, fieldnames=FIELDS)
@@ -141,11 +159,12 @@ class Store:
             if not self.log:
                 return dict(undone=0)
             batch = self.log[-1]["batch"]
-            for r in [r for r in self.log if r["batch"] == batch]:
-                self.done.pop((r["file"], r["attr"]), None)
             keep = [r for r in self.log if r["batch"] != batch]
             n = len(self.log) - len(keep)
             self.log = keep
+            self.done = {}                       # rebuild: a re-review may have overwritten earlier labels
+            for r in self.log:
+                self.done[(r["file"], r["attr"])] = r["value"]
             tmp = self.log_path + ".tmp"
             with open(tmp, "w", newline="", encoding="utf-8") as f:
                 w = csv.DictWriter(f, fieldnames=FIELDS)
@@ -199,9 +218,12 @@ def make_handler(store):
                 return self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
             if u.path == "/api/state":
                 attr, clip = q.get("attr", "vest"), q.get("clip", "")
+                sn, review = q.get("set", ""), q.get("review", "") == "1"
                 return self._json(dict(clips=store.clips, attrs={k: v["ko"] for k, v in ATTRS.items()},
+                                       sets={k: len(v) for k, v in sorted(store.sets.items())},
                                        default=ATTRS[attr]["default"], stats=store.stats(attr, clip),
-                                       items=store.page(attr, clip, q.get("sort", "time"), int(q.get("n", "96")))))
+                                       items=store.page(attr, clip, q.get("sort", "time"), int(q.get("n", "96")),
+                                                        sn, review)))
             if u.path.startswith("/img/"):
                 p = os.path.normpath(os.path.join(store.img_dir, unquote(u.path[5:])))
                 if not p.startswith(os.path.normpath(store.img_dir)) or not os.path.isfile(p):
@@ -219,7 +241,8 @@ def make_handler(store):
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
             if self.path == "/api/commit":
-                return self._json(store.commit(body.get("attr", "vest"), body.get("items", [])))
+                return self._json(store.commit(body.get("attr", "vest"), body.get("items", []),
+                                               bool(body.get("review"))))
             if self.path == "/api/undo":
                 return self._json(store.undo())
             self._send(404, b"", "text/plain")
@@ -255,6 +278,8 @@ button.primary{background:var(--acc);border-color:var(--acc);color:#fff;font-wei
 .cell .gn{position:absolute;top:2px;right:3px;font-size:11px;font-weight:700;color:#fff;background:#0009;border-radius:8px;padding:0 5px}
 .cell .pred{position:absolute;top:2px;left:3px;font-size:10px;font-weight:700;border-radius:6px;padding:0 4px;background:#0009}
 .cell .pO{color:var(--o)} .cell .pX{color:var(--x)}
+.cell .cur{position:absolute;top:16px;left:3px;font-size:10px;font-weight:700;border-radius:6px;padding:0 4px;background:#0009}
+.cell .cO{color:var(--o)} .cell .cX{color:var(--x)} .cell .cU{color:var(--u)}
 .cell.hover{border-color:var(--acc)}
 .cell.mX{border-color:var(--x)} .cell.mX img{opacity:.3}
 .cell.mO{border-color:var(--o)} .cell.mO img{opacity:.3}
@@ -277,6 +302,8 @@ button.primary{background:var(--acc);border-color:var(--acc);color:#fff;font-wei
   <span class="stat" style="color:var(--x)">X <b id="sX">-</b></span>
   <span class="stat" style="color:var(--u)">판단불가 <b id="sU">-</b></span>
   <div class="bar"><i id="bO" style="background:var(--o)"></i><i id="bX" style="background:var(--x)"></i><i id="bU" style="background:var(--u)"></i></div>
+  <label>검수 세트 <select id="set"><option value="">(전체)</option></select></label>
+  <label title="이미 라벨한 것도 다시 보여주고, 바꾸면 덮어씁니다"><input type="checkbox" id="review"> 재검수</label>
   <label>영상 <select id="clip"><option value="">전체</option></select></label>
   <label>정렬 <select id="sort"><option value="uncertain">헷갈린 것부터</option><option value="group">큰 묶음부터</option><option value="time">시간순</option><option value="large">큰 박스부터</option><option value="small">작은 박스부터</option></select></label>
   <label>개수 <select id="n"><option>48</option><option selected>96</option><option>160</option></select></label>
@@ -302,10 +329,14 @@ function applySize() {
   document.documentElement.style.setProperty("--cw", s + "px");
   document.documentElement.style.setProperty("--ch", Math.round(s * 1.7) + "px");
 }
+const SETKO = {big: "큰 크롭(트럭 위)", yellow_O: "노랑·연두인데 O 라벨", yellow_X: "노랑 상의+검정 하의"};
 async function load() {
-  const q = new URLSearchParams({attr, clip: $("clip").value, sort: $("sort").value, n: $("n").value});
+  const q = new URLSearchParams({attr, clip: $("clip").value, sort: $("sort").value, n: $("n").value,
+                                 set: $("set").value, review: $("review").checked ? "1" : "0"});
   const r = await (await fetch("/api/state?" + q)).json();
   ATTRS = r.attrs; DEF = r.default;
+  const ss = $("set");
+  if (ss.options.length === 1) for (const [k, n] of Object.entries(r.sets || {})) ss.add(new Option(`${SETKO[k] || k} (${n})`, k));
   const tb = $("tabs");
   if (!tb.children.length) {
     for (const [k, ko] of Object.entries(ATTRS)) {
@@ -336,13 +367,14 @@ function render() {
   items.forEach((it, i) => {
     const c = document.createElement("div"); c.className = "cell"; c.dataset.i = i;
     const pd = it.pred ? `<div class="pred p${it.pred}">예측 ${it.pred} ${it.p.toFixed(2)}</div>` : "";
-    c.innerHTML = `<img loading="lazy" src="/img/${encodeURI(it.file)}"><div class="tag"></div>` + pd +
+    const cur = it.cur ? `<div class="cur c${it.cur}">현재 ${it.cur}</div>` : "";
+    c.innerHTML = `<img loading="lazy" src="/img/${encodeURI(it.file)}"><div class="tag"></div>` + pd + cur +
       (it.n > 1 ? `<div class="gn">×${it.n}</div>` : "") + `<div class="meta">${it.w}×${it.h}</div>`;
-    c.title = `${it.clip}  t=${it.t}s`;
+    c.title = `${it.clip}  t=${it.t}s` + (it.note ? `\n${it.note}` : "");
     g.appendChild(c);
   });
 }
-const defOf = i => items[i].pred || DEF;
+const defOf = i => items[i].cur || items[i].pred || DEF;   // 재검수면 현재 라벨이 기본
 function setMark(i, v) {
   const c = $("grid").children[i]; if (!c) return;
   c.classList.remove("mO", "mX", "mU");
@@ -373,7 +405,8 @@ function showCtx(i) {
 $("modal").addEventListener("click", () => $("modal").style.display = "none");
 async function commit() {
   if (busy || !items.length) return; busy = true;
-  const body = {attr, items: items.map((it, i) => ({file: it.file, v: marks.get(i) || defOf(i)}))};
+  const body = {attr, review: $("review").checked,
+                items: items.map((it, i) => ({file: it.file, v: marks.get(i) || defOf(i)}))};
   try {
     const r = await (await fetch("/api/commit", {method: "POST", body: JSON.stringify(body)})).json();
     toast(`확정 ${r.committed}묶음 → ${r.images}장 — O ${r.O} / X ${r.X} / 판단불가 ${r.U}`);
@@ -389,7 +422,8 @@ async function undo() {
   } finally { busy = false; }
 }
 $("btnCommit").onclick = commit; $("btnUndo").onclick = undo;
-for (const k of ["clip", "sort", "n"]) $(k).addEventListener("change", load);
+for (const k of ["clip", "sort", "n", "review"]) $(k).addEventListener("change", load);
+$("set").addEventListener("change", () => { if ($("set").value) $("review").checked = true; load(); });
 $("size").addEventListener("input", () => { LSset("lb_size", $("size").value); applySize(); });
 if (LS("lb_size")) $("size").value = LS("lb_size");
 window.addEventListener("keydown", e => {
