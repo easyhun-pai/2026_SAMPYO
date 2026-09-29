@@ -75,10 +75,26 @@ def metrics(y, p, thr=0.5):
                 x_f1=2 * prec * rec / max(prec + rec, 1e-9), tp=tp, fp=fp, fn=fn, tn=tn)
 
 
-def train_attr(attr, feats, rows, y, val_mask, a):
+def load_aug(feat_dir, files_wanted):
+    """Augmented embeddings for the given files: (features, row->file index array)."""
+    ip = os.path.join(feat_dir, "embeddings_aug_index.csv")
+    fp = os.path.join(feat_dir, "embeddings_aug.npy")
+    if not (os.path.exists(ip) and os.path.exists(fp)):
+        return None, None
+    idx = list(csv.DictReader(open(ip, encoding="utf-8-sig")))
+    feats = np.load(fp).astype(np.float32)
+    keep = [i for i, r in enumerate(idx) if r["file"] in files_wanted]
+    return feats[keep], [idx[i]["file"] for i in keep]
+
+
+def train_attr(attr, feats, rows, y, val_mask, a, aug=None):
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     Xtr = torch.from_numpy(feats[rows[~val_mask]]).to(dev)
     ytr = torch.from_numpy(y[~val_mask].astype(np.float32)).to(dev)
+    if aug is not None:
+        Xa, ya = aug
+        Xtr = torch.cat([Xtr, torch.from_numpy(Xa).to(dev)])
+        ytr = torch.cat([ytr, torch.from_numpy(ya.astype(np.float32)).to(dev)])
     Xva = torch.from_numpy(feats[rows[val_mask]]).to(dev)
     yva = y[val_mask]
     pos_weight = torch.tensor([(ytr == 0).sum().item() / max((ytr == 1).sum().item(), 1)], device=dev)
@@ -132,9 +148,34 @@ def main(a):
         if (y[~val_mask] == 0).sum() < 5 or (y[val_mask] == 0).sum() < 2:
             print("   X 표본이 너무 적어 학습/평가가 의미 없음 — 건너뜀")
             continue
-        model, m, pv, yva = train_attr(attr, feats, rows, y, val_mask, a)
+        aug = None
+        if a.aug:
+            train_files = {idx[i]["file"] for i in rows[~val_mask]}
+            lab_of = {idx[i]["file"]: y[k] for k, i in enumerate(rows)}
+            Xa, fa = load_aug(a.features, train_files)
+            if Xa is not None and len(Xa):
+                aug = (Xa, np.array([lab_of[f] for f in fa]))
+                print(f"   증강 {len(Xa)}행 추가 (train 전용)")
+        model, m, pv, yva = train_attr(attr, feats, rows, y, val_mask, a, aug)
         print(f"   val: 정확도 {m['acc']:.3f} | X 재현율 {m['x_recall']:.3f} 정밀도 {m['x_precision']:.3f} "
               f"F1 {m['x_f1']:.3f} (TP {m['tp']} FP {m['fp']} FN {m['fn']} TN {m['tn']})")
+        if a.by_size:
+            crops = {r["file"]: r for r in csv.DictReader(open(os.path.join(a.images, "crops.csv"),
+                                                              encoding="utf-8-sig"))}
+            hs = np.array([int(crops[idx[i]["file"]]["cy2"]) - int(crops[idx[i]["file"]]["cy1"])
+                           for i in rows[val_mask]])
+            pred = (pv >= 0.5).astype(int)
+            for lo, hi in ((0, 80), (80, 120), (120, 200), (200, 10 ** 9)):
+                sel = (hs >= lo) & (hs < hi)
+                if sel.sum():
+                    ms = metrics(yva[sel], pv[sel])
+                    print(f"     높이 {lo}~{hi if hi < 10**9 else '∞'}px: {int(sel.sum()):5d}장 "
+                          f"정확도 {ms['acc']:.3f} X재현 {ms['x_recall']:.3f}")
+            real = hs < a.real_max
+            mr = metrics(yva[real], pv[real])
+            print(f"   실제 운영 크기(<{a.real_max}px, {int(real.sum())}장): 정확도 {mr['acc']:.3f} | "
+                  f"X 재현율 {mr['x_recall']:.3f} 정밀도 {mr['x_precision']:.3f}")
+            report[attr + "_realistic"] = mr
         report[attr] = m
         states[attr] = model.state_dict()
     if states:
@@ -161,4 +202,8 @@ if __name__ == "__main__":
     ap.add_argument("--wd", type=float, default=1e-4)
     ap.add_argument("--patience", type=int, default=12)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--aug", action="store_true", help="add illumination-jittered embeddings to the train split")
+    ap.add_argument("--by-size", action="store_true", help="also report val metrics per crop height")
+    ap.add_argument("--real-max", type=int, default=200,
+                    help="taller crops are staged close-ups (~20 m FOV site never shows workers that big)")
     main(ap.parse_args())
