@@ -10,8 +10,11 @@ moves on, Z undoes the last page. Labels are appended to __DATA__/humanImage/lab
 (file, attr, value, group, source, batch, time) — nothing is moved or deleted, so a mistake only costs a Z.
 
 Only one representative per near-duplicate group (features/groups.csv) is shown, and its label is
-propagated to the rest of that group (source=prop, vs source=rep for the one actually seen). Groups are
-served largest-first, so the first few hundred labels already cover most of the dataset.
+propagated to the rest of that group (source=prop, vs source=rep for the one actually seen).
+
+When humanImage/predictions.csv exists (scripts/predict_ppe.py), each crop's predicted value becomes its
+default instead of the attribute's majority value, and the default sort serves the crops the model is
+least sure about first — so a pass is verification of the model, not labeling from scratch.
 
 Values: O (wearing), X (not wearing), U (can't tell -> excluded from training).
 """
@@ -66,6 +69,13 @@ class Store:
         if os.path.exists(self.log_path):
             self.log = list(csv.DictReader(open(self.log_path, encoding="utf-8")))
         self.done = {(r["file"], r["attr"]): r["value"] for r in self.log}
+        self.pred = {}                       # (file, attr) -> (predicted value, P(wearing))
+        pp = os.path.join(img_dir, "predictions.csv")
+        if os.path.exists(pp):
+            for r in csv.DictReader(open(pp, encoding="utf-8-sig")):
+                for attr in ATTRS:
+                    if r.get(attr):
+                        self.pred[(r["file"], attr)] = (r[attr], float(r[attr + "_p"]))
         self.caps, self.cap_lock = {}, threading.Lock()
 
     def gsize(self, f):
@@ -80,15 +90,25 @@ class Store:
                     pending=sum(1 for k in v if k is None), batches=len({r["batch"] for r in self.log}),
                     covered=covered, total_img=total_img)
 
+    def _unc(self, f, attr):
+        """0 = model is on the fence, 0.5 = fully confident. Unknown predictions sort first."""
+        p = self.pred.get((f, attr))
+        return abs(p[1] - 0.5) if p else -1.0
+
     def page(self, attr, clip, sort, n):
         pend = [r for r in self.items if (r["file"], attr) not in self.done and clip in ("", r["clip"])]
-        key = {"group": lambda r: (-self.gsize(r["file"]), r["clip"], r["frame"]),
+        key = {"uncertain": lambda r: (self._unc(r["file"], attr), -self.gsize(r["file"])),
+               "group": lambda r: (-self.gsize(r["file"]), r["clip"], r["frame"]),
                "time": lambda r: (r["clip"], r["frame"], r["x1"]),
                "large": lambda r: (-r["h"], r["clip"], r["frame"]),
                "small": lambda r: (r["h"], r["clip"], r["frame"])}[sort]
         pend.sort(key=key)
-        return [dict(file=r["file"], clip=r["clip"], t=r["time_s"], w=r["w"], h=r["h"], conf=r["conf"],
-                     n=self.gsize(r["file"])) for r in pend[:n]]
+        out = []
+        for r in pend[:n]:
+            p = self.pred.get((r["file"], attr))
+            out.append(dict(file=r["file"], clip=r["clip"], t=r["time_s"], w=r["w"], h=r["h"], conf=r["conf"],
+                            n=self.gsize(r["file"]), pred=p[0] if p else None, p=round(p[1], 3) if p else None))
+        return out
 
     def commit(self, attr, decisions):
         with self.lock:
@@ -233,6 +253,8 @@ button.primary{background:var(--acc);border-color:var(--acc);color:#fff;font-wei
 .cell img{max-width:100%;max-height:calc(100% - 15px);object-fit:contain;pointer-events:none}
 .cell .meta{position:absolute;left:0;right:0;bottom:0;font-size:10px;color:var(--dim);text-align:center;background:#0d0e10cc}
 .cell .gn{position:absolute;top:2px;right:3px;font-size:11px;font-weight:700;color:#fff;background:#0009;border-radius:8px;padding:0 5px}
+.cell .pred{position:absolute;top:2px;left:3px;font-size:10px;font-weight:700;border-radius:6px;padding:0 4px;background:#0009}
+.cell .pO{color:var(--o)} .cell .pX{color:var(--x)}
 .cell.hover{border-color:var(--acc)}
 .cell.mX{border-color:var(--x)} .cell.mX img{opacity:.3}
 .cell.mO{border-color:var(--o)} .cell.mO img{opacity:.3}
@@ -256,7 +278,7 @@ button.primary{background:var(--acc);border-color:var(--acc);color:#fff;font-wei
   <span class="stat" style="color:var(--u)">판단불가 <b id="sU">-</b></span>
   <div class="bar"><i id="bO" style="background:var(--o)"></i><i id="bX" style="background:var(--x)"></i><i id="bU" style="background:var(--u)"></i></div>
   <label>영상 <select id="clip"><option value="">전체</option></select></label>
-  <label>정렬 <select id="sort"><option value="group">큰 묶음부터</option><option value="time">시간순</option><option value="large">큰 박스부터</option><option value="small">작은 박스부터</option></select></label>
+  <label>정렬 <select id="sort"><option value="uncertain">헷갈린 것부터</option><option value="group">큰 묶음부터</option><option value="time">시간순</option><option value="large">큰 박스부터</option><option value="small">작은 박스부터</option></select></label>
   <label>개수 <select id="n"><option>48</option><option selected>96</option><option>160</option></select></label>
   <label>크기 <input id="size" type="range" min="70" max="220" value="120"></label>
   <button id="btnUndo">되돌리기 (Z)</button>
@@ -302,8 +324,8 @@ async function load() {
   const T = Math.max(s.total, 1);
   $("bO").style.width = (100 * s.o / T) + "%"; $("bX").style.width = (100 * s.x / T) + "%"; $("bU").style.width = (100 * s.u / T) + "%";
   $("btnUndo").disabled = s.batches === 0;
-  $("helpLine").innerHTML = `<b>${ATTRS[attr]}</b> 라벨링 중 — 기본값 <b>${DEF}</b>. <b>클릭/드래그</b>로 ${other(DEF)} 표시,
-    <b>Shift+클릭</b>으로 판단불가. 오른쪽 위 <b>×N</b> = 이 라벨이 함께 적용되는 장수 ·
+  $("helpLine").innerHTML = `<b>${ATTRS[attr]}</b> 검수 중 — 왼쪽 위 <b>예측값이 기본</b>(예측 없으면 ${DEF}).
+    <b>틀린 것만 클릭/드래그</b>로 뒤집고, <b>Shift+클릭</b>으로 판단불가. 오른쪽 위 <b>×N</b> = 함께 적용되는 장수 ·
     <kbd>Space</kbd> 확정 · <kbd>Z</kbd> 되돌리기 · <kbd>Tab</kbd> 속성 전환 ·
     <b>우클릭</b>/<kbd>C</kbd> 원본 프레임 · <kbd>Esc</kbd> 닫기`;
   items = r.items; marks = new Map(); render(); window.scrollTo(0, 0);
@@ -313,12 +335,14 @@ function render() {
   if (!items.length) { g.innerHTML = '<div class="empty">이 조건에서 라벨링할 이미지가 없습니다.</div>'; return; }
   items.forEach((it, i) => {
     const c = document.createElement("div"); c.className = "cell"; c.dataset.i = i;
-    c.innerHTML = `<img loading="lazy" src="/img/${encodeURI(it.file)}"><div class="tag"></div>` +
+    const pd = it.pred ? `<div class="pred p${it.pred}">예측 ${it.pred} ${it.p.toFixed(2)}</div>` : "";
+    c.innerHTML = `<img loading="lazy" src="/img/${encodeURI(it.file)}"><div class="tag"></div>` + pd +
       (it.n > 1 ? `<div class="gn">×${it.n}</div>` : "") + `<div class="meta">${it.w}×${it.h}</div>`;
     c.title = `${it.clip}  t=${it.t}s`;
     g.appendChild(c);
   });
 }
+const defOf = i => items[i].pred || DEF;
 function setMark(i, v) {
   const c = $("grid").children[i]; if (!c) return;
   c.classList.remove("mO", "mX", "mU");
@@ -328,7 +352,7 @@ function setMark(i, v) {
 const cellOf = e => e.target.closest && e.target.closest(".cell");
 $("grid").addEventListener("mousedown", e => {
   if (e.button !== 0) return; const c = cellOf(e); if (!c) return; e.preventDefault();
-  const i = +c.dataset.i, want = e.shiftKey ? "U" : other(DEF);
+  const i = +c.dataset.i, want = e.shiftKey ? "U" : other(defOf(i));
   painting = marks.get(i) === want ? null : want;
   setMark(i, painting);
 });
@@ -349,7 +373,7 @@ function showCtx(i) {
 $("modal").addEventListener("click", () => $("modal").style.display = "none");
 async function commit() {
   if (busy || !items.length) return; busy = true;
-  const body = {attr, items: items.map((it, i) => ({file: it.file, v: marks.get(i) || DEF}))};
+  const body = {attr, items: items.map((it, i) => ({file: it.file, v: marks.get(i) || defOf(i)}))};
   try {
     const r = await (await fetch("/api/commit", {method: "POST", body: JSON.stringify(body)})).json();
     toast(`확정 ${r.committed}묶음 → ${r.images}장 — O ${r.O} / X ${r.X} / 판단불가 ${r.U}`);
