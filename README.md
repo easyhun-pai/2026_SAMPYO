@@ -5,20 +5,22 @@
 ## To-do
 
 ### 환경
-- [ ] `__DATA__/humanImage/` 노트북으로 옮기기 (git 미포함, 19,473장 + `crops.csv`, `review.csv`)
-- [ ] `.venv` 생성 — torch(CUDA), `transformers>=4.56`, opencv-python, ultralytics
-- [ ] Hugging Face 가입 → [facebook/dinov3-vitb16-pretrain-lvd1689m](https://huggingface.co/facebook/dinov3-vitb16-pretrain-lvd1689m) 라이선스 동의 → 토큰 발급 → `hf auth login`
-- [ ] DINOv3 ViT-B/16 로딩 · 특징 추출 테스트
+- [x] `.venv` 생성 — torch 2.6+cu124, transformers, opencv
+- [x] Hugging Face 가입 → DINOv3 라이선스 동의 → 토큰 발급 → `hf auth login`
+- [ ] **DINOv3 게이트 승인 대기 중** ([Gated Repos](https://huggingface.co/settings/gated-repos)) → 승인되면 재추출:
+  `python scripts/embed_crops.py --model facebook/dinov3-vitb16-pretrain-lvd1689m`
 
 ### 데이터
-- [ ] DINOv3 특징으로 근접 중복 제거 (1초 간격 연속 프레임의 같은 사람)
+- [x] 특징 추출 (`scripts/embed_crops.py`, 현재 DINOv2-base) → `__DATA__/features/embeddings.npy`
+- [x] 근접 중복 묶기 (`scripts/dedup_crops.py --thr 0.80`) → 19,473장 → **4,742 묶음**
+- [x] 라벨링 툴 (`scripts/label_ppe.py`, `라벨링툴.bat`) — 묶음 대표 1장 라벨 → 묶음 전체에 전파
 - [ ] 라벨링 기준 확정
   - 스마트조끼 O: 위 주황 · 아래 검정 (앞/뒤/옆 모두)
   - 스마트조끼 X: 일반 안전조끼(연두·노랑), 하네스, 미착용
   - 판단불가: 너무 작거나 가려짐 → 학습 제외
-- [ ] `scripts/review_crops.py` → 안전모/스마트조끼 라벨링 툴로 확장 (속성별 O / X / 판단불가)
-- [ ] 스마트조끼 1~2천 장 수동 라벨링 → 1차 모델 예측 → 애매한 것만 검수
-- [ ] 안전모 X 라벨링 (카메라3 약 50장)
+- [ ] **스마트조끼 라벨링** — 큰 묶음부터 500개(= 이미지 72% 커버) 목표
+- [ ] 안전모 라벨링 — 미착용은 카메라3에만 존재 (40묶음)
+- [ ] 1차 모델 예측 → 애매한 것만 재검수
 - [ ] train / val / test 분리: 시간 구간·영상 단위 (랜덤 분리 금지)
 
 ### 모델
