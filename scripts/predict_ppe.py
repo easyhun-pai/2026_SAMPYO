@@ -104,7 +104,7 @@ if __name__ == "__main__":
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default=os.path.join(ROOT, "__MODEL__", "ppe_head.pt"))
+    ap.add_argument("--model", default=os.path.join(ROOT, "__MODEL__", "smart_vest_260929.pt"))
     ap.add_argument("--features", default=os.path.join(DATA, "features"))
     ap.add_argument("--images", default=os.path.join(DATA, "humanImage"))
     ap.add_argument("--thr", type=float, default=0.5)

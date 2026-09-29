@@ -1,5 +1,5 @@
 """
-Smart-vest inference: DINOv3 backbone + the trained head (__MODEL__/smart_vest.pt).
+Smart-vest inference: DINOv3 backbone + the trained head (__MODEL__/smart_vest_260929.pt).
 
     python scripts/infer_vest.py --images path\to\crops              # person crops -> O/X
     python scripts/infer_vest.py --video clip.mp4 --out out.mp4      # full pipeline on a video
@@ -125,7 +125,7 @@ def run_video(a, clf):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default=os.path.join(ROOT, "__MODEL__", "smart_vest.pt"))
+    ap.add_argument("--model", default=os.path.join(ROOT, "__MODEL__", "smart_vest_260929.pt"))
     ap.add_argument("--images", help="crop image file or folder")
     ap.add_argument("--video")
     ap.add_argument("--out", help="annotated video path (with --video)")

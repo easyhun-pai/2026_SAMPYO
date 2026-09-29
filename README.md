@@ -24,7 +24,7 @@
 - [x] train / val 분리: 120초 시간 블록 단위 + 카메라 홀드아웃
 
 ### 모델
-- [x] 백본 고정 + 속성별 헤드 (`train_ppe.py`, hidden 512) → `__MODEL__/ppe_head.pt`
+- [x] 백본 고정 + 속성별 헤드 (`train_ppe.py`, hidden 512) → `__MODEL__/smart_vest_260929.pt`
 - [x] 조도 증강 (`embed_aug.py` → `train_ppe.py --aug`): 카메라 교차 cam2 0.934 → 0.949
 - [x] 스마트조끼 성능 (증강 포함):
       · **실제 운영 크기(<200px) 정확도 0.941 / 미착용 재현율 0.948 / 정밀도 0.975**

@@ -198,7 +198,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--features", default=os.path.join(DATA, "features"))
     ap.add_argument("--images", default=os.path.join(DATA, "humanImage"))
-    ap.add_argument("--out", default=os.path.join(ROOT, "__MODEL__", "ppe_head.pt"))
+    ap.add_argument("--out", default=os.path.join(ROOT, "__MODEL__", "smart_vest_260929.pt"))
     ap.add_argument("--attr", choices=ATTRS)
     ap.add_argument("--hidden", type=int, default=512, help="0 = linear probe")
     ap.add_argument("--block", type=float, default=120.0, help="train/val split block, seconds")
