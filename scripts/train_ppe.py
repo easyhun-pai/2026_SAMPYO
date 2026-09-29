@@ -132,11 +132,19 @@ def main(a):
     idx, feats, row_of, labels = load(a.features, a.images)
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
     report, states = {}, {}
+    drop = set(a.exclude_clip or [])
+    if drop:
+        print(f"제외한 영상(학습·검증 모두): {', '.join(sorted(drop))}")
     for attr in ([a.attr] if a.attr else ATTRS):
-        files = {row_of[f]: v for f, v in labels[attr].items()}
+        files = {row_of[f]: v for f, v in labels[attr].items() if idx[row_of[f]]["clip"] not in drop}
         rows = np.array(sorted(files))
         y = np.array([files[i] for i in rows])
-        if a.holdout_clip:                       # honest generalization test: a whole camera unseen
+        if a.val_clip:                           # validate only on unseen time blocks of the real site video
+            in_clip = np.array([idx[i]["clip"] == a.val_clip for i in rows])
+            val_blocks = split_blocks(idx, rows[in_clip], a.block, a.val_frac, a.seed)
+            val_mask = np.array([in_clip[k] and (idx[i]["clip"], int(float(idx[i]["time_s"]) // a.block))
+                                 in val_blocks for k, i in enumerate(rows)])
+        elif a.holdout_clip:                     # honest generalization test: a whole camera unseen
             val_mask = np.array([idx[i]["clip"] == a.holdout_clip for i in rows])
         else:
             val_blocks = split_blocks(idx, rows, a.block, a.val_frac, a.seed)
@@ -196,6 +204,10 @@ if __name__ == "__main__":
     ap.add_argument("--block", type=float, default=120.0, help="train/val split block, seconds")
     ap.add_argument("--val-frac", type=float, default=0.25)
     ap.add_argument("--holdout-clip", help="use this clip as the whole validation set (cross-camera test)")
+    ap.add_argument("--exclude-clip", action="append",
+                    help="drop this clip from train AND val (staged test footage); repeatable")
+    ap.add_argument("--val-clip", help="validate only on held-out time blocks of this clip (the real site video); "
+                                       "everything else goes to train")
     ap.add_argument("--epochs", type=int, default=60)
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--lr", type=float, default=1e-3)
