@@ -204,7 +204,8 @@ def make_handler(store):
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store" if "json" in ctype else "max-age=3600")
+            # images may cache, but the page and API must not: a stale page hides new UI after an update
+            self.send_header("Cache-Control", "max-age=3600" if ctype.startswith("image/") else "no-store")
             self.end_headers()
             self.wfile.write(body)
 
